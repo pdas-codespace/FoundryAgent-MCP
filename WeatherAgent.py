@@ -10,7 +10,7 @@ from opentelemetry import trace
 load_dotenv()
 
 logging.basicConfig(
-    level=os.getenv("LOG_LEVEL", "INFO"),
+    level=os.getenv("LOG_LEVEL", "ERROR"),
     format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
 )
 
@@ -32,6 +32,28 @@ else:
     )
 
 tracer = trace.get_tracer(__name__)
+
+def traced_call(span_name: str, func, *args, **kwargs):
+    """Wrap a synchronous SDK call in a child span so it appears explicitly in traces.
+
+    span_name: Short operation name (e.g. agents.create, runs.get)
+    func: Callable to invoke
+    *args/**kwargs: Passed to callable
+    Returns the function's return value.
+    """
+    with tracer.start_as_current_span(span_name) as span:
+        span.set_attribute("weather.sdk.function", getattr(func, "__name__", span_name))
+        try:
+            result = func(*args, **kwargs)
+            # Attach lightweight identifiers if present
+            for attr in ["id", "status", "role"]:
+                if hasattr(result, attr):
+                    span.set_attribute(f"weather.result.{attr}", getattr(result, attr))
+            return result
+        except Exception as e:
+            span.record_exception(e)
+            span.set_attribute("weather.error", str(e))
+            raise
 
 
 def log_info(message: str, **properties: str) -> None:
@@ -83,11 +105,13 @@ with project_client:
 
         # Create a new agent if no existing agent found with AGENT_ID.       
         if not agent:
-            agent = agents_client.create_agent(
+            agent = traced_call(
+                "agents.create",
+                agents_client.create_agent,
                 model=os.environ["MODEL_DEPLOYMENT_NAME"],
                 name="Weather-agent",
                 instructions="You are a weather assistant that helps users find weather updates and warnings for a given US state and City",
-                tools=mcp_tool.definitions
+                tools=mcp_tool.definitions,
             )
             print(f"Created agent, ID: {agent.id}")
         else:
@@ -101,33 +125,48 @@ with project_client:
         log_info("Agent created", agent_id=agent.id, model=os.environ["MODEL_DEPLOYMENT_NAME"])
 
         # Create thread for communication
-        thread = agents_client.threads.create()
+        thread = traced_call("threads.create", agents_client.threads.create)
         print(f"Created thread, ID: {thread.id}")
         log_info("Thread created", thread_id=thread.id)
 
         # Create message to thread
-        message = agents_client.messages.create(
+        user_prompt_text = (
+            "I live in Seward, Alaska and wondering what kind of clothing and accessory I should weather today when I go out?"
+        )
+        message = traced_call(
+            "messages.create",
+            agents_client.messages.create,
             thread_id=thread.id,
             role="user",
-            content="I live in Lafayette Hill, Pennsylvania and wondering what kind of clothing and accessory I should weather today when I go out?",
+            content=user_prompt_text,
         )
         print(f"Created message, ID: {message.id}")
         log_info("Message created", message_id=message.id, thread_id=thread.id)
+        # Trace the user prompt explicitly so it appears in Foundry / App Insights (avoid storing too much PII; truncate if large)
+        run_span.set_attribute("weather.user_prompt", user_prompt_text[:500])
+        run_span.add_event(
+            "user_prompt",
+            {
+                "thread.id": thread.id,
+                "message.id": message.id,
+                "prompt.length": len(user_prompt_text),
+            },
+        )
         # Create and process agent run in thread
-        run = agents_client.runs.create(thread_id=thread.id, agent_id=agent.id)
+        run = traced_call("runs.create", agents_client.runs.create, thread_id=thread.id, agent_id=agent.id)
         print(f"Created run, ID: {run.id}")
         log_info("Run created", run_id=run.id, thread_id=thread.id)
 
         while run.status in ["queued", "in_progress", "requires_action"]:
-            time.sleep(1)
-            run = agents_client.runs.get(thread_id=thread.id, run_id=run.id)
+            time.sleep(5)
+            run = traced_call("runs.get", agents_client.runs.get, thread_id=thread.id, run_id=run.id)
 
             if run.status == "requires_action" and isinstance(run.required_action, SubmitToolApprovalAction):
                 tool_calls = run.required_action.submit_tool_approval.tool_calls
                 if not tool_calls:
                     print("No tool calls provided - cancelling run")
                     log_info("Run cancelled due to missing tool calls", run_id=run.id)
-                    agents_client.runs.cancel(thread_id=thread.id, run_id=run.id)
+                    traced_call("runs.cancel", agents_client.runs.cancel, thread_id=thread.id, run_id=run.id)
                     break
 
                 tool_approvals = []
@@ -136,6 +175,18 @@ with project_client:
                         try:
                             print(f"Approving tool call: {tool_call}")
                             log_info("Tool call approval", run_id=run.id, tool_call_id=tool_call.id)
+                            # Add an event to the run span to record tool selection decision
+                            run_span.add_event(
+                                "tool_selection",
+                                {
+                                    "run.id": run.id,
+                                    "thread.id": thread.id,
+                                    "tool.call.id": tool_call.id,
+                                    "tool.type": getattr(tool_call, "type", "unknown"),
+                                    "tool.name": getattr(tool_call, "name", "unknown"),
+                                    "approved": True,
+                                },
+                            )
                             tool_approvals.append(
                                 ToolApproval(
                                     tool_call_id=tool_call.id,
@@ -146,11 +197,24 @@ with project_client:
                         except Exception as e:
                             print(f"Error approving tool_call {tool_call.id}: {e}")
                             log_info("Tool approval error", tool_call_id=tool_call.id, error=str(e))
+                            run_span.add_event(
+                                "tool_selection_error",
+                                {
+                                    "run.id": run.id,
+                                    "thread.id": thread.id,
+                                    "tool.call.id": tool_call.id,
+                                    "error": str(e),
+                                },
+                            )
 
                 print(f"tool_approvals: {tool_approvals}")
                 if tool_approvals:
-                    agents_client.runs.submit_tool_outputs(
-                        thread_id=thread.id, run_id=run.id, tool_approvals=tool_approvals
+                    traced_call(
+                        "runs.submit_tool_outputs",
+                        agents_client.runs.submit_tool_outputs,
+                        thread_id=thread.id,
+                        run_id=run.id,
+                        tool_approvals=tool_approvals,
                     )
                     log_info("Submitted tool approvals", run_id=run.id, approvals=str(len(tool_approvals)))
 
@@ -160,12 +224,30 @@ with project_client:
 
         print(f"Run completed with status: {run.status}")
         log_info("Run completed", run_id=run.id, status=run.status)
+        run_span.set_attribute("weather.run.status", run.status)
+        run_span.add_event(
+            "run_completion",
+            {
+                "run.id": run.id,
+                "thread.id": thread.id,
+                "status": run.status,
+                "failed": run.status == "failed",
+            },
+        )
         if run.status == "failed":
             print(f"Run failed: {run.last_error}")
             log_info("Run failed", run_id=run.id, error=str(run.last_error))
+            run_span.add_event(
+                "run_error",
+                {
+                    "run.id": run.id,
+                    "thread.id": thread.id,
+                    "error": str(run.last_error),
+                },
+            )
 
     # Display run steps and tool calls
-    run_steps = agents_client.run_steps.list(thread_id=thread.id, run_id=run.id)
+    run_steps = traced_call("run_steps.list", agents_client.run_steps.list, thread_id=thread.id, run_id=run.id)
 
     # Loop through each step
     for step in run_steps:
@@ -191,7 +273,9 @@ with project_client:
         print()  # add an extra newline between steps
 
     # Fetch and log all messages
-    messages = agents_client.messages.list(thread_id=thread.id, order=ListSortOrder.ASCENDING)
+    messages = traced_call(
+        "messages.list", agents_client.messages.list, thread_id=thread.id, order=ListSortOrder.ASCENDING
+    )
     print("\nConversation:")
     print("-" * 50)
     for msg in messages:
