@@ -73,20 +73,30 @@ mcp_tool = McpTool(
 with project_client:
     agents_client = project_client.agents
 
-    # Create a new agent.
-    # NOTE: To reuse existing agent, fetch it with get_agent(agent_id)
+    
+
+    
     with tracer.start_as_current_span("weather_agent.run") as run_span:
-        agent = agents_client.create_agent(
-            model=os.environ["MODEL_DEPLOYMENT_NAME"],
-            name="Weather-agent",
-            instructions="You are a weather assistant that helps users find weather updates and warnings for a given US state and City",
-            tools=mcp_tool.definitions
-        )
+        # get agent by ID and if it doesn't exist create a new one
+        agent_id = os.environ.get("AGENT_ID")
+        agent = agents_client.get_agent(agent_id) if agent_id else None
+
+        # Create a new agent if no existing agent found with AGENT_ID.       
+        if not agent:
+            agent = agents_client.create_agent(
+                model=os.environ["MODEL_DEPLOYMENT_NAME"],
+                name="Weather-agent",
+                instructions="You are a weather assistant that helps users find weather updates and warnings for a given US state and City",
+                tools=mcp_tool.definitions
+            )
+            print(f"Created agent, ID: {agent.id}")
+        else:
+            print(f"Using existing agent, ID: {agent.id}")
 
         run_span.set_attribute("weather.agent_id", agent.id)
         run_span.set_attribute("weather.model_deployment", os.environ["MODEL_DEPLOYMENT_NAME"])
 
-        print(f"Created agent, ID: {agent.id}")
+        
         print("No custom tools registered in this simplified run.")
         log_info("Agent created", agent_id=agent.id, model=os.environ["MODEL_DEPLOYMENT_NAME"])
 
@@ -144,8 +154,7 @@ with project_client:
                     )
                     log_info("Submitted tool approvals", run_id=run.id, approvals=str(len(tool_approvals)))
 
-            # No tool handling required in simplified version
-
+            
             print(f"Current run status: {run.status}")
             log_info("Run status", run_id=run.id, status=run.status)
 
@@ -197,8 +206,7 @@ with project_client:
                 content_preview=last_text.text.value[:300],
             )
 
-    # Example of dynamic tool management
-    print("\nTool management demo skipped (MCP-specific logic removed in this version).")
+    
 
     # Clean-up and delete the agent once the run is finished.
     # NOTE: Comment out this line if you plan to reuse the agent later.
