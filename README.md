@@ -47,6 +47,7 @@ requirements.txt    # Python dependencies
    - `USER_ADVENTURE_PROMPT` / `USER_WEATHER_PROMPT`: *(optional)* Override initial user message.
    - `ENABLE_STEP_TRACE`: *(optional, default `true`)* Emit live run step tracing (reasoning + pending tool calls) to console + telemetry.
    - `AGENT_ID`: *(optional)* If set, reuses an existing agent instead of creating a new one. Clear/unset this if you add new tools (e.g. File Search) and need them attached during agent creation.
+   - `CONNECTED_AGENT_ID`: *(optional)* If set, uses an existing agent to create a connected workflow
 
 2. Ensure you are authenticated for Azure (e.g. `az login`, managed identity, or service principal creds).
 

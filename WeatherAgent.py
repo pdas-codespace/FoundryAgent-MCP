@@ -210,17 +210,18 @@ with project_client:
 
         connected_agent = ConnectedAgentTool(
             id=connected_agent_id, name="AttireAgent", description="Invoke this Agent to fetch Attire and dress info. Pass on Weather details to the agent and also the type of indoor or outdoor activity user is interested in"
-        )
+        ) if connected_agent_id else None
 
+        combined_tools = list(mcp_tool.definitions) + file_search_tool_definitions + (connected_agent.definitions if connected_agent else [])
 
         # Create a new agent if no existing agent found with AGENT_ID.       
         if not agent:
-            combined_tools = list(mcp_tool.definitions) + file_search_tool_definitions + connected_agent.definitions
+            
             agent = traced_call(
                 "agents.create",
                 agents_client.create_agent,
                 model=os.environ["MODEL_DEPLOYMENT_NAME"],
-                name="Weather-agent",
+                name="NewAdventureAgent",
                 instructions=agent_instructions,
                 tools=combined_tools,
             )
