@@ -6,8 +6,9 @@ FoundryAgent-MCP is a Python sample that demonstrates how to drive an Azure AI F
 
 1. Model Context Protocol (MCP) tools (e.g. a Weather MCP server exposing `get_alerts`, `get_forecast`).
 2. The Foundry "Files" (Vector Store) search tool for retrieval-augmented responses, when you provide existing vector store IDs.
+3. Use Another Agent as a tool through AI Foundry's "Connected Agents" workflow orchestration feature
 
-It also streams operational telemetry into Azure Monitor / Application Insights. The project provisions an AI Project client, creates an agent tied to your model deployment, binds both MCP and (optionally) File Search capabilities, and orchestrates a full run including tool call approvals and step-level tracing.
+It also streams operational telemetry into Azure Monitor / Application Insights. The project provisions an AI Project client, creates an agent tied to your model deployment, binds both MCP and (optionally) File Search capabilities, and orchestrates a full run including Connected Agent invocation, MCP tool call and step-level tracing.
 
 ## Key features
 
