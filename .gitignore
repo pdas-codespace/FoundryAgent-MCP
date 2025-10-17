@@ -1,1 +1,3 @@
 .env
+*.http
+tool_approvals.json
